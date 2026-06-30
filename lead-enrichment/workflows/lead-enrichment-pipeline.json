@@ -1,0 +1,256 @@
+{
+  "name": "Lead Enrichment Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Lead Submission Form",
+        "formDescription": "Submit a lead for AI-powered enrichment and outreach",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Full Name",
+              "fillType": "text",
+              "required": true
+            },
+            {
+              "fieldLabel": "Email",
+              "fillType": "email",
+              "required": true
+            },
+            {
+              "fieldLabel": "Company",
+              "fillType": "text",
+              "required": true
+            },
+            {
+              "fieldLabel": "LinkedIn URL",
+              "fillType": "text",
+              "required": false
+            },
+            {
+              "fieldLabel": "Notes",
+              "fillType": "textarea",
+              "required": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Lead Form",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2,
+      "position": [400, 400]
+    },
+    {
+      "parameters": {
+        "color": 4,
+        "width": 480,
+        "height": 350,
+        "content": "## Lead Enrichment Pipeline\n\n### What it does:\n1. Form collects lead info\n2. AI analyzes and scores the lead\n3. Generates personalized email\n4. Hot leads (>70) get email + Slack alert\n5. All leads saved to CRM\n\n### Setup:\n1. Add OpenAI API key\n2. Add Google Sheets credentials\n3. Add Gmail credentials\n4. Add Slack credentials\n5. Create Google Sheet with lead columns\n6. Activate!"
+      },
+      "name": "Instructions",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [100, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate and sanitize input\nconst input = $input.first().json;\n\n// Check required fields\nif (!input['Full Name'] || !input['Email'] || !input['Company']) {\n  throw new Error('Missing required fields: Name, Email, Company');\n}\n\n// Email validation\nconst emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\nif (!emailRegex.test(input['Email'])) {\n  throw new Error('Invalid email format');\n}\n\nreturn [{\n  json: {\n    name: input['Full Name'].trim(),\n    email: input['Email'].trim().toLowerCase(),\n    company: input['Company'].trim(),\n    linkedin: input['LinkedIn URL'] || '',\n    notes: input['Notes'] || '',\n    submittedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 400]
+    },
+    {
+      "parameters": {
+        "text": "=You are a B2B lead analyst. Analyze this lead and provide:\n\n1. **ICP Score** (0-100): How well they fit as an ideal customer\n2. **Company Analysis**: Brief overview of their company\n3. **Pain Points**: 2-3 potential challenges they face\n4. **Personalized Email**: A cold outreach email that addresses their specific pain points\n\nLead Info:\n- Name: {{ $json.name }}\n- Email: {{ $json.email }}\n- Company: {{ $json.company }}\n- LinkedIn: {{ $json.linkedin }}\n- Notes: {{ $json.notes }}\n\nReturn as JSON with keys: icp_score, company_analysis, pain_points, email_subject, email_body",
+        "model": "gpt-4o",
+        "options": {
+          "temperature": 0.7,
+          "responseFormat": {
+            "type": "json_object"
+          }
+        }
+      },
+      "name": "AI Lead Analysis",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.2,
+      "position": [920, 400],
+      "credentials": {
+        "openAiApi": {
+          "id": "YOUR_OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "hot-lead-filter",
+              "leftValue": "={{ $json.icp_score }}",
+              "rightValue": 70,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Hot Lead? (Score > 70)",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [1180, 400]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "cachedResultName": "Lead CRM"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "Leads",
+          "cachedResultName": "Leads"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Name": "={{ $('Validate Input').item.json.name }}",
+            "Email": "={{ $('Validate Input').item.json.email }}",
+            "Company": "={{ $('Validate Input').item.json.company }}",
+            "LinkedIn": "={{ $('Validate Input').item.json.linkedin }}",
+            "ICP Score": "={{ $json.icp_score }}",
+            "Analysis": "={{ $json.company_analysis }}",
+            "Pain Points": "={{ $json.pain_points.join(', ') }}",
+            "Email Subject": "={{ $json.email_subject }}",
+            "Email Body": "={{ $json.email_body }}",
+            "Status": "={{ $json.icp_score >= 70 ? 'Hot Lead' : 'Warm Lead' }}",
+            "Submitted At": "={{ $('Validate Input').item.json.submittedAt }}"
+          }
+        },
+        "options": {}
+      },
+      "name": "Save to CRM",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1440, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Validate Input').item.json.email }}",
+        "subject": "={{ $json.email_subject }}",
+        "emailType": "html",
+        "message": "={{ $json.email_body }}",
+        "options": {}
+      },
+      "name": "Send Outreach Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1700, 300],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "YOUR_GMAIL_CREDENTIAL_ID",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "channel": "#leads",
+        "text": ":fire: *Hot Lead Alert!*\n\n*budget:* {{ $('Validate Input').item.json.name }}\n*Company:* {{ $('Validate Input').item.json.company }}\n*ICP Score:* {{ $json.icp_score }}/100\n\n*Pain Points:*\n{{ $json.pain_points.map(p => '• ' + p).join('\\n') }}\n\nEmail has been sent automatically :email:",
+        "otherOptions": {}
+      },
+      "name": "Alert Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1700, 500],
+      "credentials": {
+        "slackApi": {
+          "id": "YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Lead Form": {
+      "main": [
+        [
+          {
+            "node": "Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [
+          {
+            "node": "AI Lead Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Lead Analysis": {
+      "main": [
+        [
+          {
+            "node": "Hot Lead? (Score > 70)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hot Lead? (Score > 70)": {
+      "main": [
+        [
+          {
+            "node": "Save to CRM",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Outreach Email",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Alert Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

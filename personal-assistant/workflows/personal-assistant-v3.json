@@ -1,0 +1,589 @@
+{
+  "name": "Personal Assistant - OpenCode v3",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "c0674a9c-d6b0-44d7-a016-e0d087d19eb9",
+      "name": "WhatsApp Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "whatsapp-incoming"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telegram",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "cbc7a0bb-63d2-4c03-a390-a15f591f40b1",
+      "name": "Telegram Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        0,
+        192
+      ],
+      "webhookId": "telegram-incoming"
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {
+          "readStatus": "unread",
+          "receivedAfter": "={{ new Date(Date.now() - 60000).toISOString() }}"
+        }
+      },
+      "id": "aca4ab2a-9fbf-4edb-8132-e79471032091",
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        368
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "s64sh8RXDOP3Kt6p",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ]
+        }
+      },
+      "id": "4a9b066a-c749-4dd6-8b3b-eb3967510262",
+      "name": "Scheduled Jobs",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst input = raw.body || raw;\nlet channel = 'unknown';\nlet userId = 'default';\nlet message = '';\nlet messageId = null;\n\n// WhatsApp Meta Cloud API\nif (input.entry && input.entry[0]?.changes?.[0]?.value?.messages?.[0]) {\n  const waMsg = input.entry[0].changes[0].value.messages[0];\n  channel = 'whatsapp';\n  userId = waMsg.from;\n  message = waMsg.text?.body || waMsg.type || '';\n  messageId = waMsg.id;\n}\n// Telegram\nelse if (input.message?.chat?.id) {\n  channel = 'telegram';\n  userId = String(input.message.chat.id);\n  message = input.message.text || '';\n  messageId = String(input.message.message_id);\n}\n// Gmail\nelse if (input.from || input.snippet) {\n  channel = 'gmail';\n  userId = input.from || 'email_user';\n  message = input.snippet || input.subject || '';\n  messageId = input.id;\n}\n// Fallback / test\nelse {\n  channel = input.channel || 'test';\n  userId = String(input.userId || input.from || 'test_user');\n  message = input.message || input.text || input.body || 'test message';\n}\n\n// Hard guard — never proceed with empty message\nif (!message || message.trim() === '') {\n  return [{ json: { skip: true, reason: 'empty message', channel, userId } }];\n}\n\nreturn [{ json: { channel, userId, message: message.trim(), timestamp: new Date().toISOString(), messageId, raw } }];"
+      },
+      "id": "3be7f6ac-e4ce-4a7a-9c1c-255419421038",
+      "name": "OpenCode Normalizer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        288,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nif (data.skip) {\n  return [];\n}\nreturn [{ json: data }];"
+      },
+      "id": "skip-guard-id-0001",
+      "name": "Skip Guard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        528,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT message, channel, timestamp FROM conversations WHERE user_id = '{{ $json.userId }}' ORDER BY timestamp DESC LIMIT 10",
+        "options": {}
+      },
+      "id": "12e132ec-42c6-4abb-8111-942de0b567bb",
+      "name": "Memory Fetch (Postgres)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        768,
+        192
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "fBIrRPeQO6EjuKgl",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const normalizedData = $('OpenCode Normalizer').first().json;\nconst historyRows = $input.all().map(i => i.json).filter(r => r.message && r.role);\n// Oldest first for correct conversation order\nconst history = [...historyRows].reverse();\n\nconst messages = [\n  {\n    role: 'system',\n    content: `You are LOISEKK, a fast and intelligent personal assistant. Rules:\n- Answer directly and concisely\n- For web searches, output exactly: TOOL:web_search:<your search query>\n- Never explain that you are going to search — just output the TOOL line\n- For everything else, respond naturally in plain text\n- Current time: ${new Date().toISOString()}`\n  },\n  ...history.map(row => ({ role: row.role, content: row.message })),\n  { role: 'user', content: normalizedData.message }\n];\n\nreturn [{\n  json: {\n    messages,\n    userId: normalizedData.userId,\n    channel: normalizedData.channel,\n    userMessage: normalizedData.message,\n    timestamp: normalizedData.timestamp\n  }\n}];"
+      },
+      "id": "cc635407-2a65-41af-9043-8945844caa2d",
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1008,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/chat",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'qwen2.5:3b', stream: false, options: { temperature: 0.7, num_predict: 512 }, messages: $json.messages }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      "name": "Ollama LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1248,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\nconst buildPromptData = $('Build Prompt').first().json;\n\nconst assistantMessage = response.message?.content || response.response || 'I could not process that request. Please try again.';\n\n// Structured tool call detection\nconst toolMatch = assistantMessage.match(/TOOL:(\\w+):(.+)/);\nlet toolCall = null;\nif (toolMatch) {\n  toolCall = { tool: toolMatch[1].trim(), args: toolMatch[2].trim() };\n}\n\n// Clean tool prefix from display response\nconst cleanResponse = toolCall\n  ? assistantMessage.replace(/TOOL:\\w+:[^\\n]+/, '').trim() || 'Searching...'\n  : assistantMessage.trim();\n\nreturn [{\n  json: {\n    response: cleanResponse,\n    toolCall,\n    userId: buildPromptData.userId,\n    channel: buildPromptData.channel,\n    userMessage: buildPromptData.userMessage,\n    timestamp: buildPromptData.timestamp\n  }\n}];"
+      },
+      "id": "1d7c70bc-e9de-4f1c-b5f9-04e4531eab95",
+      "name": "Response Parser",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1488,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.toolCall !== null && $json.toolCall !== undefined }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "81019ee3-f3d5-408c-93e3-0c175cdd1777",
+      "name": "Tool Router",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1728,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const query = $('Response Parser').first().json.toolCall.args;\nconst url = 'https://html.duckduckgo.com/html/';\nconst body = 'q=' + encodeURIComponent(query) + '&t=h_&ia=web';\n\ntry {\n  const resp = await fetch(url, {\n    method: 'POST',\n    headers: {\n      'Content-Type': 'application/x-www-form-urlencoded',\n      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'\n    },\n    body\n  });\n  const html = await resp.text();\n  const results = [];\n  const resultRegex = /<a rel=\"nofollow\" class=\"result__a\" href=\"([^\"]+)\"[^>]*>([^<]+)<\\/a>[\\s\\S]*?class=\"result__snippet\"[^>]*>([^<]+)</gi;\n  let match;\n  while ((match = resultRegex.exec(html)) !== null && results.length < 5) {\n    let href = match[1];\n    try { href = new URL(href).searchParams.get('uddg') || href; } catch(e) {}\n    results.push({ title: match[2].trim(), url: href, description: match[3].trim() });\n  }\n  return [{ json: { web: { results }, query } }];\n} catch(e) {\n  return [{ json: { web: { results: [] }, query, error: e.message } }];\n}"
+      },
+      "id": "1e37c054-5a99-48d4-8b5e-63cbc447f224",
+      "name": "Web Search Tool",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1968,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/chat",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'qwen2.5:3b', stream: false, options: { temperature: 0.3, num_predict: 256 }, messages: [{ role: 'system', content: 'Summarize the search results in 2-3 sentences. Be direct, no filler.' }, { role: 'user', content: 'Query: ' + $('Response Parser').first().json.toolCall.args + '\\n\\nResults: ' + JSON.stringify(($json.web?.results || []).slice(0, 3).map(r => ({ title: r.title, description: r.description, url: r.url }))) }] }) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "d53f2c56-c5c7-4242-815f-2dda0f2abf83",
+      "name": "Search Summarizer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        2208,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge search summary into final response shape\nconst searchResult = $input.first().json;\nconst parserData = $('Response Parser').first().json;\nconst summary = searchResult.message?.content || searchResult.response || 'Could not retrieve search results.';\n\nreturn [{\n  json: {\n    response: summary.trim(),\n    userId: parserData.userId,\n    channel: parserData.channel,\n    userMessage: parserData.userMessage,\n    timestamp: parserData.timestamp\n  }\n}];"
+      },
+      "id": "merge-search-0001",
+      "name": "Merge Search Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2448,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "outputIndex": 0,
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.channel }}",
+                    "rightValue": "whatsapp",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "outputIndex": 1,
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.channel }}",
+                    "rightValue": "telegram",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "fallbackOutput": 2
+      },
+      "id": "ca4e8447-9a5b-4ac3-8595-898b3cfa89c2",
+      "name": "Channel Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        2688,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO conversations (user_id, message, channel, timestamp) VALUES ('{{ $json.userId }}', '{{ $json.userMessage.replace(/'/g, \"''\") }}', '{{ $json.channel }}', '{{ $json.timestamp }}'), ('{{ $json.userId }}', '{{ $json.response.replace(/'/g, \"''\") }}', '{{ $json.channel }}', NOW())",
+        "options": {}
+      },
+      "id": "memory-store-0001",
+      "name": "Memory Store (Postgres)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        2448,
+        320
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "fBIrRPeQO6EjuKgl",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $json.userId, type: 'text', text: { body: $json.response } }) }}",
+        "options": {}
+      },
+      "id": "8938c392-21a1-42e2-9b32-aa838201bef0",
+      "name": "WhatsApp Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2928,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.userId }}",
+        "text": "={{ $json.response }}",
+        "additionalFields": {}
+      },
+      "id": "ecd75dad-b0f1-4b46-9046-76aaf00c9948",
+      "name": "Telegram Respond",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        2928,
+        272
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "fyQqn8mkJwQH38CP",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "yashbrahmankar95@gmail.com",
+        "subject": "Re: {{ $json.userMessage.substring(0, 50) }}",
+        "message": "={{ $json.response }}",
+        "options": {}
+      },
+      "id": "addba7c6-adee-4e6b-8f22-fe33237f1925",
+      "name": "Gmail Respond",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        2928,
+        464
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "s64sh8RXDOP3Kt6p",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Daily scheduled task — always returns at least one item so n8n doesn't error\nconst now = new Date();\nreturn [{\n  json: {\n    task: 'daily_heartbeat',\n    status: 'completed',\n    timestamp: now.toISOString(),\n    message: 'Scheduled check ran at ' + now.toLocaleTimeString()\n  }\n}];"
+      },
+      "id": "6c1fe97b-6f36-4807-a135-10780417eb2c",
+      "name": "Task Executor",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        288,
+        544
+      ]
+    }
+  ],
+  "connections": {
+    "WhatsApp Webhook": {
+      "main": [
+        [
+          {
+            "node": "OpenCode Normalizer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Webhook": {
+      "main": [
+        [
+          {
+            "node": "OpenCode Normalizer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "OpenCode Normalizer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scheduled Jobs": {
+      "main": [
+        [
+          {
+            "node": "Task Executor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenCode Normalizer": {
+      "main": [
+        [
+          {
+            "node": "Skip Guard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip Guard": {
+      "main": [
+        [
+          {
+            "node": "Memory Fetch (Postgres)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Memory Fetch (Postgres)": {
+      "main": [
+        [
+          {
+            "node": "Build Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Prompt": {
+      "main": [
+        [
+          {
+            "node": "Ollama LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama LLM": {
+      "main": [
+        [
+          {
+            "node": "Response Parser",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Response Parser": {
+      "main": [
+        [
+          {
+            "node": "Tool Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool Router": {
+      "main": [
+        [
+          {
+            "node": "Web Search Tool",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Memory Store (Postgres)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Channel Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Web Search Tool": {
+      "main": [
+        [
+          {
+            "node": "Search Summarizer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Summarizer": {
+      "main": [
+        [
+          {
+            "node": "Merge Search Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Search Response": {
+      "main": [
+        [
+          {
+            "node": "Memory Store (Postgres)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Channel Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Channel Router": {
+      "main": [
+        [
+          {
+            "node": "WhatsApp Respond",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Respond",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gmail Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

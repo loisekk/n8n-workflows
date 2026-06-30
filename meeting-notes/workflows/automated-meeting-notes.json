@@ -1,0 +1,334 @@
+{
+  "name": "Automated Meeting Notes - Calendar to Notion",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "name": "Check Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [400, 400]
+    },
+    {
+      "parameters": {
+        "color": 4,
+        "width": 480,
+        "height": 420,
+        "content": "## Automated Meeting Notes Workflow\n\n### What it does:\n1. Checks your Google Calendar every hour\n2. Filters meetings with 'notes' in the title\n3. Waits until meeting starts\n4. Transcribes audio via Whisper API\n5. Summarizes with OpenAI\n6. Saves to Notion database\n7. Sends summary to Slack\n8. Creates action items in Todoist\n\n### Setup:\n1. Add Google Calendar credentials\n2. Add OpenAI API key\n3. Add Notion API key + database ID\n4. Add Slack workspace credentials\n5. Add Todoist API key\n6. Set your calendar name in 'Get Today's Events'\n7. Activate workflow!"
+      },
+      "name": "Instructions",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [100, 100]
+    },
+    {
+      "parameters": {
+        "calendar": {
+          "__rl": true,
+          "mode": "list",
+          "value": "YOUR_CALENDAR_ID",
+          "cachedResultName": "Primary Calendar"
+        },
+        "options": {
+          "timeMin": "={{ $now.startOf('hour').toISO() }}",
+          "timeMax": "={{ $now.endOf('hour').plus({ hours: 2 }).toISO() }}"
+        }
+      },
+      "name": "Get Today's Events",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.1,
+      "position": [660, 400],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "YOUR_GOOGLE_CALENDAR_CREDENTIAL_ID",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "filter-meetings",
+              "leftValue": "={{ $json.summary.toLowerCase() }}",
+              "rightValue": "notes",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Filter: Has 'notes' in Title",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [920, 400]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $json.start.dateTime }}",
+        "unit": "dateTime"
+      },
+      "name": "Wait Until Meeting Starts",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1180, 400]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.openai.com/v1/audio/transcriptions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.OPENAI_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formData",
+              "name": "file",
+              "value": "={{ $json.audioFilePath }}"
+            },
+            {
+              "parameterType": "formData",
+              "name": "model",
+              "value": "whisper-1"
+            },
+            {
+              "parameterType": "formData",
+              "name": "response_format",
+              "value": "json"
+            },
+            {
+              "parameterType": "formData",
+              "name": "language",
+              "value": "en"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Transcribe Audio (Whisper)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 400]
+    },
+    {
+      "parameters": {
+        "text": "=You are a meeting notes assistant. Summarize the following meeting transcript into:\n\n1. **Meeting Summary** (3-5 bullet points)\n2. **Key Decisions** (numbered list)\n3. **Action Items** (with assignee if mentioned)\n4. **Next Steps** (what happens after this meeting)\n\nMeeting Title: {{ $('Wait Until Meeting Starts').item.json.summary }}\nDate: {{ $('Wait Until Meeting Starts').item.json.start.dateTime }}\nAttendees: {{ $('Wait Until Meeting Starts').item.json.attendees.join(', ') }}\n\nTranscript:\n{{ $json.text }}\n\nFormat the output as clean markdown.",
+        "model": "gpt-4o",
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "name": "Summarize with OpenAI",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.2,
+      "position": [1700, 400],
+      "credentials": {
+        "openAiApi": {
+          "id": "YOUR_OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "databaseId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "YOUR_NOTION_DATABASE_ID",
+          "cachedResultName": "Meeting Notes"
+        },
+        "title": "={{ $('Wait Until Meeting Starts').item.json.summary }} - {{ $now.format('yyyy-MM-dd') }}",
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "Date",
+              "date": "={{ $('Wait Until Meeting Starts').item.json.start.dateTime }}"
+            },
+            {
+              "key": "Attendees",
+              "rich_text": "={{ $('Wait Until Meeting Starts').item.json.attendees.join(', ') }}"
+            },
+            {
+              "key": "Summary",
+              "rich_text": "={{ $json.text }}"
+            }
+          ]
+        },
+        "options": {
+          "content": "={{ $json.text }}"
+        }
+      },
+      "name": "Save to Notion",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [1960, 300],
+      "credentials": {
+        "notionApi": {
+          "id": "YOUR_NOTION_CREDENTIAL_ID",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "channel": "#meeting-notes",
+        "text": "=:memo: *Meeting Summary: {{ $('Wait Until Meeting Starts').item.json.summary }}*\n\n:calendar: {{ $now.format('yyyy-MM-dd HH:mm') }}\n:busts_in_silhouette: {{ $('Wait Until Meeting Starts').item.json.attendees.join(', ') }}\n\n---\n\n{{ $json.text }}\n\n:link: <https://notion.so/{{ $json.pageId }}|View in Notion>",
+        "otherOptions": {}
+      },
+      "name": "Send to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1960, 500],
+      "credentials": {
+        "slackApi": {
+          "id": "YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "task",
+        "operation": "create",
+        "title": "=Action from: {{ $('Wait Until Meeting Starts').item.json.summary }}",
+        "description": "={{ $json.text.match(/Action Items[\\s\\S]*?(?=##|$)/i)?.[0] || 'No action items found' }}",
+        "additionalFields": {
+          "dueDate": "={{ $now.plus({ days: 7 }).format('yyyy-MM-dd') }}",
+          "priority": 1
+        }
+      },
+      "name": "Create Todoist Tasks",
+      "type": "n8n-nodes-base.todoist",
+      "typeVersion": 1,
+      "position": [2220, 400],
+      "credentials": {
+        "todoistApi": {
+          "id": "YOUR_TODOIST_CREDENTIAL_ID",
+          "name": "Todoist account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Check Every Hour": {
+      "main": [
+        [
+          {
+            "node": "Get Today's Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Today's Events": {
+      "main": [
+        [
+          {
+            "node": "Filter: Has 'notes' in Title",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter: Has 'notes' in Title": {
+      "main": [
+        [
+          {
+            "node": "Wait Until Meeting Starts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Until Meeting Starts": {
+      "main": [
+        [
+          {
+            "node": "Transcribe Audio (Whisper)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcribe Audio (Whisper)": {
+      "main": [
+        [
+          {
+            "node": "Summarize with OpenAI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize with OpenAI": {
+      "main": [
+        [
+          {
+            "node": "Save to Notion",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send to Slack",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Create Todoist Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "timezone": "UTC"
+  },
+  "tags": [
+    {
+      "name": "meeting-notes"
+    },
+    {
+      "name": "automation"
+    },
+    {
+      "name": "ai"
+    }
+  ]
+}

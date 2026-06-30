@@ -1,0 +1,179 @@
+{
+  "name": "AI Content Repurpose Machine",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "content",
+        "options": {}
+      },
+      "name": "Content Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [400, 400],
+      "webhookId": "content-input"
+    },
+    {
+      "parameters": {
+        "color": 4,
+        "width": 480,
+        "height": 350,
+        "content": "## AI Content Repurpose Machine\n\n### What it does:\n1. Receives content via webhook POST\n2. AI generates 4 platform versions\n3. Splits into individual posts\n4. Saves all to Google Sheets\n\n### How to use:\n```bash\ncurl -X POST http://localhost:5678/webhook/content \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"content\": \"Your text here\"}'\n```\n\n### Setup:\n1. Add OpenAI API key\n2. Add Google Sheets credentials\n3. Create sheet with: Timestamp, Platform, Content, Status\n4. Activate!"
+      },
+      "name": "Instructions",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [100, 100]
+    },
+    {
+      "parameters": {
+        "text": "=You are a content repurposing expert. Take the following content and create 4 platform-specific versions:\n\n1. **LINKEDIN** - Professional, thought-leadership tone, 150-300 words, use line breaks for readability\n2. **TWITTER** - Concise, punchy, max 280 chars per tweet, use thread format if needed, add relevant hashtags\n3. **INSTAGRAM** - Visual storytelling, engaging caption, 30 relevant hashtags at the end\n4. **BLOG** - Long-form, SEO-optimized, 500-800 words, with headers and bullet points\n\nOriginal Content:\n{{ $json.body.content }}\n\nReturn as JSON with keys: linkedin, twitter, instagram, blog",
+        "model": "gpt-4o",
+        "options": {
+          "temperature": 0.7,
+          "responseFormat": {
+            "type": "json_object"
+          }
+        }
+      },
+      "name": "Generate 4 Platform Versions",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.2,
+      "position": [700, 400],
+      "credentials": {
+        "openAiApi": {
+          "id": "YOUR_OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "output",
+        "options": {}
+      },
+      "name": "Split Platforms",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [960, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse the JSON output and create individual items\nconst items = [];\nconst platforms = ['linkedin', 'twitter', 'instagram', 'blog'];\n\nfor (const platform of platforms) {\n  if ($json.output[platform]) {\n    items.push({\n      json: {\n        platform: platform,\n        content: $json.output[platform],\n        timestamp: new Date().toISOString(),\n        status: 'generated'\n      }\n    });\n  }\n}\n\nreturn items;"
+      },
+      "name": "Format Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1220, 400]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "cachedResultName": "Content Repurposer"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "Sheet1",
+          "cachedResultName": "Sheet1"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp": "={{ $json.timestamp }}",
+            "Platform": "={{ $json.platform }}",
+            "Content": "={{ $json.content }}",
+            "Status": "={{ $json.status }}"
+          }
+        },
+        "options": {}
+      },
+      "name": "Save to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1480, 400],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { 'success': true, 'platforms': ['linkedin', 'twitter', 'instagram', 'blog'], 'message': 'Content repurposed successfully!' } }}",
+        "options": {}
+      },
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1740, 400]
+    }
+  ],
+  "connections": {
+    "Content Webhook": {
+      "main": [
+        [
+          {
+            "node": "Generate 4 Platform Versions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate 4 Platform Versions": {
+      "main": [
+        [
+          {
+            "node": "Split Platforms",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Platforms": {
+      "main": [
+        [
+          {
+            "node": "Format Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Output": {
+      "main": [
+        [
+          {
+            "node": "Save to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
