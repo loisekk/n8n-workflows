@@ -1,319 +1,240 @@
-{
-  "name": "Automate LinkedIn Posts with AI",
-  "nodes": [
-    {
-      "id": "schedule-trigger",
-      "name": "Schedule Trigger",
-      "type": "n8n-nodes-base.scheduleTrigger",
-      "position": [580, 540],
-      "parameters": {
-        "rule": {
-          "interval": [
-            {
-              "triggerAtHour": 15
-            }
-          ]
-        }
-      },
-      "typeVersion": 1.2
-    },
-    {
-      "id": "sticky-note-1",
-      "name": "Instructions",
-      "type": "n8n-nodes-base.stickyNote",
-      "position": [300, 200],
-      "parameters": {
-        "color": 6,
-        "width": 500,
-        "height": 300,
-        "content": "## How to Set Up\n\n1. Create a **Notion database** with columns: Name, Status, Date, Content\n2. Add your **Notion API credentials**\n3. Add your **OpenAI API credentials**\n4. Add your **LinkedIn OAuth2 credentials**\n5. Set the Notion database ID in the 'Query Notion' node\n6. Activate this workflow!\n\nThe workflow runs daily at 3 PM and posts any Notion entries scheduled for today."
-      },
-      "typeVersion": 1
-    },
-    {
-      "id": "query-notion",
-      "name": "Query Notion for Today's Posts",
-      "type": "n8n-nodes-base.notion",
-      "position": [800, 540],
-      "parameters": {
-        "filters": {
-          "conditions": [
-            {
-              "key": "Date",
-              "date": "={{ $today.format('yyyy-MM-dd') }}",
-              "condition": "equals"
-            }
-          ]
-        },
-        "options": {},
-        "resource": "databasePage",
-        "operation": "getAll",
-        "databaseId": {
-          "__rl": true,
-          "mode": "list",
-          "value": "YOUR_NOTION_DATABASE_ID",
-          "cachedResultName": "LinkedIn Posts"
-        },
-        "filterType": "manual"
-      },
-      "credentials": {
-        "notionApi": {
-          "id": "YOUR_NOTION_CREDENTIAL_ID",
-          "name": "Notion account"
-        }
-      },
-      "typeVersion": 2.2
-    },
-    {
-      "id": "get-page-content",
-      "name": "Get Page Content",
-      "type": "n8n-nodes-base.notion",
-      "position": [1020, 540],
-      "parameters": {
-        "blockId": {
-          "__rl": true,
-          "mode": "url",
-          "value": "={{ $json.url }}"
-        },
-        "resource": "block",
-        "operation": "getAll",
-        "returnAll": true
-      },
-      "credentials": {
-        "notionApi": {
-          "id": "YOUR_NOTION_CREDENTIAL_ID",
-          "name": "Notion account"
-        }
-      },
-      "typeVersion": 2.2
-    },
-    {
-      "id": "aggregate-content",
-      "name": "Aggregate Text & Image",
-      "type": "n8n-nodes-base.aggregate",
-      "position": [1240, 540],
-      "parameters": {
-        "options": {},
-        "fieldsToAggregate": {
-          "fieldToAggregate": [
-            {
-              "fieldToAggregate": "content"
-            },
-            {
-              "fieldToAggregate": "image.file.url"
-            }
-          ]
-        }
-      },
-      "typeVersion": 1
-    },
-    {
-      "id": "format-with-ai",
-      "name": "Format Post with OpenAI",
-      "type": "n8n-nodes-base.openAi",
-      "position": [1480, 540],
-      "parameters": {
-        "text": "=Please reformat this content for LinkedIn. Add paragraph breaks, bullet points if present, and make it engaging:\n\n{{ $json.content.join(' ') }}",
-        "prompt": "define",
-        "options": {},
-        "resource": "assistant",
-        "assistantId": {
-          "__rl": true,
-          "mode": "list",
-          "value": "YOUR_OPENAI_ASSISTANT_ID",
-          "cachedResultName": "LinkedIn Post Formatter"
-        }
-      },
-      "credentials": {
-        "openAiApi": {
-          "id": "YOUR_OPENAI_CREDENTIAL_ID",
-          "name": "OpenAI account"
-        }
-      },
-      "typeVersion": 1.3
-    },
-    {
-      "id": "fetch-image",
-      "name": "Fetch Image",
-      "type": "n8n-nodes-base.httpRequest",
-      "position": [1480, 700],
-      "parameters": {
-        "url": "={{ $json.imageUrl }}",
-        "options": {
-          "response": {
-            "response": {
-              "responseFormat": "file"
-            }
-          }
-        }
-      },
-      "typeVersion": 4.2
-    },
-    {
-      "id": "merge-text-image",
-      "name": "Combine Text + Image",
-      "type": "n8n-nodes-base.merge",
-      "position": [1720, 540],
-      "parameters": {
-        "mode": "combine",
-        "options": {},
-        "combinationMode": "mergeByPosition"
-      },
-      "typeVersion": 2.1
-    },
-    {
-      "id": "post-linkedin",
-      "name": "Post on LinkedIn",
-      "type": "n8n-nodes-base.linkedIn",
-      "position": [1960, 540],
-      "parameters": {
-        "text": "={{ $json.output }}",
-        "person": "YOUR_LINKEDIN_PERSON_URN",
-        "additionalFields": {},
-        "shareMediaCategory": "IMAGE"
-      },
-      "credentials": {
-        "linkedInOAuth2Api": {
-          "id": "YOUR_LINKEDIN_CREDENTIAL_ID",
-          "name": "LinkedIn account"
-        }
-      },
-      "typeVersion": 1
-    },
-    {
-      "id": "mark-done",
-      "name": "Mark as Done in Notion",
-      "type": "n8n-nodes-base.notion",
-      "position": [2200, 540],
-      "parameters": {
-        "pageId": {
-          "__rl": true,
-          "mode": "url",
-          "value": "={{ $('Query Notion for Today's Posts').item.json.url }}"
-        },
-        "options": {},
-        "resource": "databasePage",
-        "operation": "update",
-        "propertiesUi": {
-          "propertyValues": [
-            {
-              "key": "Status",
-              "statusValue": "Done"
-            }
-          ]
-        }
-      },
-      "credentials": {
-        "notionApi": {
-          "id": "YOUR_NOTION_CREDENTIAL_ID",
-          "name": "Notion account"
-        }
-      },
-      "typeVersion": 2.2
-    }
-  ],
-  "active": false,
-  "pinData": {},
-  "settings": {
-    "executionOrder": "v1",
-    "saveManualExecutions": true,
-    "callerPolicy": "workflowsFromSameOwner",
-    "timezone": "UTC"
-  },
-  "connections": {
-    "Schedule Trigger": {
-      "main": [
-        [
-          {
-            "node": "Query Notion for Today's Posts",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Query Notion for Today's Posts": {
-      "main": [
-        [
-          {
-            "node": "Get Page Content",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Get Page Content": {
-      "main": [
-        [
-          {
-            "node": "Aggregate Text & Image",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Aggregate Text & Image": {
-      "main": [
-        [
-          {
-            "node": "Format Post with OpenAI",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Fetch Image",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Format Post with OpenAI": {
-      "main": [
-        [
-          {
-            "node": "Combine Text + Image",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Fetch Image": {
-      "main": [
-        [
-          {
-            "node": "Combine Text + Image",
-            "type": "main",
-            "index": 1
-          }
-        ]
-      ]
-    },
-    "Combine Text + Image": {
-      "main": [
-        [
-          {
-            "node": "Post on LinkedIn",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Post on LinkedIn": {
-      "main": [
-        [
-          {
-            "node": "Mark as Done in Notion",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    }
-  },
-  "description": "Automate LinkedIn Posts with AI - Fetches posts from Notion, formats them with OpenAI, and publishes to LinkedIn on schedule."
+﻿{
+    "updatedAt":  "2026-06-27T17:17:51.819Z",
+    "createdAt":  "2026-06-27T17:17:51.819Z",
+    "id":  "93UzCFhO8ZYsWXaT",
+    "name":  "Automate LinkedIn Posts with AI",
+    "description":  null,
+    "active":  false,
+    "isArchived":  false,
+    "nodes":  [
+                  {
+                      "parameters":  {
+                                         "rule":  {
+                                                      "interval":  [
+                                                                       {
+                                                                           "triggerAtHour":  15
+                                                                       }
+                                                                   ]
+                                                  }
+                                     },
+                      "name":  "Schedule Trigger",
+                      "type":  "n8n-nodes-base.scheduleTrigger",
+                      "typeVersion":  1.2,
+                      "position":  [
+                                       580,
+                                       540
+                                   ],
+                      "id":  "469e329d-f826-4d3d-8e37-59e5e7c6386a"
+                  },
+                  {
+                      "parameters":  {
+                                         "color":  6,
+                                         "width":  500,
+                                         "height":  300,
+                                         "content":  "## How to Set Up\n\n1. Create a Notion database\n2. Add credentials\n3. Activate!"
+                                     },
+                      "name":  "Instructions",
+                      "type":  "n8n-nodes-base.stickyNote",
+                      "typeVersion":  1,
+                      "position":  [
+                                       300,
+                                       200
+                                   ],
+                      "id":  "ca922e57-d643-4df5-bacc-0af8fd3340c7"
+                  },
+                  {
+                      "parameters":  {
+                                         "filters":  {
+                                                         "conditions":  [
+                                                                            {
+                                                                                "key":  "Date",
+                                                                                "date":  "={{ $today.format(\u0027yyyy-MM-dd\u0027) }}",
+                                                                                "condition":  "equals"
+                                                                            }
+                                                                        ]
+                                                     },
+                                         "options":  {
+
+                                                     },
+                                         "resource":  "databasePage",
+                                         "operation":  "getAll",
+                                         "databaseId":  {
+                                                            "__rl":  true,
+                                                            "mode":  "list",
+                                                            "value":  "YOUR_NOTION_DB_ID",
+                                                            "cachedResultName":  "LinkedIn Posts"
+                                                        },
+                                         "filterType":  "manual"
+                                     },
+                      "name":  "Query Notion",
+                      "type":  "n8n-nodes-base.notion",
+                      "typeVersion":  2.2,
+                      "position":  [
+                                       800,
+                                       540
+                                   ],
+                      "id":  "98b0cd47-ddd3-4e5d-a458-91c7e26678fe"
+                  },
+                  {
+                      "parameters":  {
+                                         "text":  "={{ $json.content }}",
+                                         "prompt":  "define",
+                                         "options":  {
+
+                                                     },
+                                         "resource":  "assistant",
+                                         "assistantId":  {
+                                                             "__rl":  true,
+                                                             "mode":  "list",
+                                                             "value":  "YOUR_ASSISTANT_ID",
+                                                             "cachedResultName":  "Formatter"
+                                                         }
+                                     },
+                      "name":  "Format with AI",
+                      "type":  "n8n-nodes-base.openAi",
+                      "typeVersion":  1.3,
+                      "position":  [
+                                       1100,
+                                       540
+                                   ],
+                      "id":  "fc3b1b8e-f8aa-402c-b6d9-3bdcb5ed4998"
+                  },
+                  {
+                      "parameters":  {
+                                         "text":  "={{ $json.output }}",
+                                         "person":  "YOUR_PERSON_URN",
+                                         "additionalFields":  {
+
+                                                              },
+                                         "shareMediaCategory":  "IMAGE"
+                                     },
+                      "name":  "Post LinkedIn",
+                      "type":  "n8n-nodes-base.linkedIn",
+                      "typeVersion":  1,
+                      "position":  [
+                                       1400,
+                                       540
+                                   ],
+                      "id":  "426e56bd-eac8-4407-a861-f87c4f50e2cd"
+                  },
+                  {
+                      "parameters":  {
+                                         "pageId":  {
+                                                        "__rl":  true,
+                                                        "mode":  "url",
+                                                        "value":  "={{ $(\u0027Query Notion\u0027).item.json.url }}"
+                                                    },
+                                         "options":  {
+
+                                                     },
+                                         "resource":  "databasePage",
+                                         "operation":  "update",
+                                         "propertiesUi":  {
+                                                              "propertyValues":  [
+                                                                                     {
+                                                                                         "key":  "Status",
+                                                                                         "statusValue":  "Done"
+                                                                                     }
+                                                                                 ]
+                                                          }
+                                     },
+                      "name":  "Mark Done",
+                      "type":  "n8n-nodes-base.notion",
+                      "typeVersion":  2.2,
+                      "position":  [
+                                       1700,
+                                       540
+                                   ],
+                      "id":  "2bc477f9-80f2-4951-ad46-5754af8c6ab6"
+                  }
+              ],
+    "connections":  {
+                        "Schedule Trigger":  {
+                                                 "main":  [
+                                                              [
+                                                                  {
+                                                                      "node":  "Query Notion",
+                                                                      "type":  "main",
+                                                                      "index":  0
+                                                                  }
+                                                              ]
+                                                          ]
+                                             },
+                        "Query Notion":  {
+                                             "main":  [
+                                                          [
+                                                              {
+                                                                  "node":  "Format with AI",
+                                                                  "type":  "main",
+                                                                  "index":  0
+                                                              }
+                                                          ]
+                                                      ]
+                                         },
+                        "Format with AI":  {
+                                               "main":  [
+                                                            [
+                                                                {
+                                                                    "node":  "Post LinkedIn",
+                                                                    "type":  "main",
+                                                                    "index":  0
+                                                                }
+                                                            ]
+                                                        ]
+                                           },
+                        "Post LinkedIn":  {
+                                              "main":  [
+                                                           [
+                                                               {
+                                                                   "node":  "Mark Done",
+                                                                   "type":  "main",
+                                                                   "index":  0
+                                                               }
+                                                           ]
+                                                       ]
+                                          }
+                    },
+    "settings":  {
+                     "executionOrder":  "v1"
+                 },
+    "staticData":  null,
+    "meta":  null,
+    "nodeGroups":  [
+
+                   ],
+    "pinData":  null,
+    "versionId":  "19392e4c-16f7-44be-b6b9-05776a24b39c",
+    "activeVersionId":  null,
+    "versionCounter":  1,
+    "triggerCount":  0,
+    "sourceWorkflowId":  null,
+    "tags":  [
+
+             ],
+    "shared":  [
+                   {
+                       "updatedAt":  "2026-06-27T17:17:51.831Z",
+                       "createdAt":  "2026-06-27T17:17:51.831Z",
+                       "role":  "workflow:owner",
+                       "workflowId":  "93UzCFhO8ZYsWXaT",
+                       "projectId":  "nVoZ5lCdrDlB9G6c",
+                       "project":  {
+                                       "updatedAt":  "2026-07-05T07:32:27.110Z",
+                                       "createdAt":  "2026-06-03T21:04:40.976Z",
+                                       "id":  "nVoZ5lCdrDlB9G6c",
+                                       "name":  "YASH BRAHMANKAR \u003cyashbrahmankar95@gmail.com\u003e",
+                                       "type":  "personal",
+                                       "icon":  null,
+                                       "description":  null,
+                                       "customTelemetryTags":  [
+
+                                                               ],
+                                       "creatorId":  "1b1bf1a6-cbdd-4531-a824-755e827eef24"
+                                   }
+                   }
+               ],
+    "versionMetadata":  {
+                            "name":  null,
+                            "description":  null
+                        }
 }
