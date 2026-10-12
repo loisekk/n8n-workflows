@@ -1,0 +1,313 @@
+{
+  "name": "Email Summarizer & Daily Digest",
+  "nodes": [
+    {
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 4
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 200]
+    },
+    {
+      "id": "fetch-emails",
+      "name": "Fetch Unread Emails",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.1,
+      "position": [280, 100],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "s64sh8RXDOP3Kt6p",
+          "name": "Gmail account"
+        }
+      },
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {
+          "readStatus": "unread",
+          "receivedAfter": "={{ new Date(Date.now() - 86400000).toISOString() }}"
+        }
+      }
+    },
+    {
+      "id": "parse-email",
+      "name": "Parse Email Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 100],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst emails = items.map(item => {\n  const d = item.json;\n  return {\n    id: d.id || '',\n    subject: d.subject || '(no subject)',\n    from: d.from?.name || d.from?.address || d.from || 'unknown',\n    fromEmail: d.from?.address || d.from || '',\n    snippet: d.snippet || '',\n    text: d.textPlain || d.text || d.snippet || '',\n    date: d.date || new Date().toISOString(),\n    hasAttachments: (d.attachments || []).length > 0\n  };\n});\n\nreturn [{ json: { emails, count: emails.length } }];"
+      }
+    },
+    {
+      "id": "classify-batch",
+      "name": "Classify All Emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [760, 100],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const email = $input.first().json;\nconst results = [];\n\nfor (const e of email.emails) {\n  const text = (e.subject + ' ' + e.snippet).toLowerCase();\n  \n  // Classification rules\n  let category = 'other';\n  let priority = 'low';\n  \n  // Promotions / Marketing\n  if (text.match(/unsubscribe|promo|sale|discount|offer|% off|deal|black friday|cyber|marketing|newsletter|weekly digest|monthly update/)) {\n    category = 'promotion';\n    priority = 'low';\n  }\n  // Social / Notifications\n  else if (text.match(/notification|alert|reminder|verify|confirm|reset password|security|login|sign.?in|account|subscription|joined|followed|commented|replied|liked/)) {\n    category = 'notification';\n    priority = 'low';\n  }\n  // Spam / Automated\n  else if (text.match(/noreply|no-reply|donotreply|automated|auto-generated|receipt|invoice|order #|tracking|shipment|delivery/)) {\n    category = 'automated';\n    priority = 'low';\n  }\n  // Important - direct human communication\n  else if (text.match(/urgent|important|action.?required|deadline|meeting|interview|offer|contract|proposal|asap|priority|decision|review|feedback|question|discuss|call|sync/)) {\n    category = 'important';\n    priority = 'high';\n  }\n  // Job / Career\n  else if (text.match(/job|position|hiring|recruit|interview|resume|candidate|career|opportunity|apply/)) {\n    category = 'career';\n    priority = 'high';\n  }\n  // Financial\n  else if (text.match(/bank|payment|transfer|balance|statement|tax|salary|invest|crypto|stock|dividend/)) {\n    category = 'financial';\n    priority = 'medium';\n  }\n  // Personal / Direct\n  else if (e.fromEmail && !e.fromEmail.match(/@gmail|@yahoo|@hotmail|@outlook|@google|@github|@linkedin|@medium|@substack/)) {\n    category = 'personal';\n    priority = 'medium';\n  }\n  else {\n    category = 'other';\n    priority = 'medium';\n  }\n  \n  results.push({\n    ...e,\n    category,\n    priority\n  });\n}\n\nreturn [{ json: { emails: results, total: results.length } }];"
+      }
+    },
+    {
+      "id": "filter-important",
+      "name": "Filter Important Emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 100],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const data = $input.first().json;\nconst important = data.emails.filter(e => \n  e.priority === 'high' || \n  e.priority === 'medium' ||\n  e.category === 'important' ||\n  e.category === 'career' ||\n  e.category === 'financial' ||\n  e.category === 'personal'\n);\n\nconst summary = {\n  high: important.filter(e => e.priority === 'high').length,\n  medium: important.filter(e => e.priority === 'medium').length,\n  low: data.emails.filter(e => e.priority === 'low').length,\n  total: data.total\n};\n\nreturn [{ json: { important, summary, allEmails: data.emails } }];"
+      }
+    },
+    {
+      "id": "build-ai-prompt",
+      "name": "Build AI Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, 100],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const data = $input.first().json;\n\nconst emailList = data.important.map((e, i) => {\n  return `Email ${i + 1}:\nFrom: ${e.from} <${e.fromEmail}>\nSubject: ${e.subject}\nSnippet: ${e.snippet}\nCategory: ${e.category} | Priority: ${e.priority}`;\n}).join('\\n\\n---\\n\\n');\n\nconst systemPrompt = `You are an email summarizer AI. Analyze the emails and create a clean daily digest.\n\nRules:\n1. Group emails by importance (high priority first)\n2. For each email provide: sender, subject, one-line summary, and action needed (if any)\n3. At the end, give an overall priority score (1-10) for how urgent the inbox is\n4. Use clean formatting with emojis for categories\n5. Be concise - this is a mobile-friendly digest\n6. Total emails received today: ${data.summary.total}\n7. Important: ${data.summary.high} high, ${data.summary.medium} medium, ${data.summary.low} low priority`;\n\nconst userPrompt = `Summarize these emails into a clean digest:\\n\\n${emailList}`;\n\nreturn [{ json: { systemPrompt, userPrompt, emailCount: data.important.length } }];"
+      }
+    },
+    {
+      "id": "ollama-summarize",
+      "name": "Ollama AI Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1480, 100],
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/chat",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'qwen2.5:3b', stream: false, options: { temperature: 0.3, num_predict: 1500 }, messages: [{ role: 'system', content: $json.systemPrompt }, { role: 'user', content: $json.userPrompt }] }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      }
+    },
+    {
+      "id": "format-digest",
+      "name": "Format Final Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1720, 100],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const response = $input.first().json;\nconst summaryData = $('Build AI Prompt').first().json;\nconst filterData = $('Filter Important Emails').first().json;\n\nconst aiSummary = response.message?.content || response.response || 'Could not generate summary.';\n\nconst header = `📬 **Email Digest** — ${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}\\n` +\n  `━━━━━━━━━━━━━━━━━━━━━━\\n` +\n  `📊 ${filterData.summary.total} emails today | ${filterData.summary.high} urgent | ${filterData.summary.medium} important | ${filterData.summary.low} low priority\\n` +\n  `━━━━━━━━━━━━━━━━━━━━━━\\n\\n`;\n\nconst fullDigest = header + aiSummary;\n\nreturn [{ json: { digest: fullDigest, emailCount: summaryData.emailCount } }];"
+      }
+    },
+    {
+      "id": "check-emails-exist",
+      "name": "Any Emails?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1960, 100],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "email-count-check",
+              "leftValue": "={{ $json.emailCount }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "send-telegram-digest",
+      "name": "Send Telegram Digest",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [2200, 0],
+      "credentials": {
+        "telegramApi": {
+          "id": "fyQqn8mkJwQH38CP",
+          "name": "Telegram account"
+        }
+      },
+      "parameters": {
+        "chatId": "7402721836",
+        "text": "={{ $json.digest }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      }
+    },
+    {
+      "id": "no-emails-log",
+      "name": "No New Emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 200],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return [{ json: { message: 'No important emails to summarize.', timestamp: new Date().toISOString() } }];"
+      }
+    }
+  ],
+  "active": false,
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all"
+  },
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Unread Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Unread Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Unread Emails": {
+      "main": [
+        [
+          {
+            "node": "Parse Email Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Email Content": {
+      "main": [
+        [
+          {
+            "node": "Classify All Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify All Emails": {
+      "main": [
+        [
+          {
+            "node": "Filter Important Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Important Emails": {
+      "main": [
+        [
+          {
+            "node": "Build AI Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build AI Prompt": {
+      "main": [
+        [
+          {
+            "node": "Ollama AI Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama AI Summary": {
+      "main": [
+        [
+          {
+            "node": "Format Final Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Final Digest": {
+      "main": [
+        [
+          {
+            "node": "Any Emails?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Emails?": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Digest",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No New Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
