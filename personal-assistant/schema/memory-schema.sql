@@ -4,7 +4,6 @@
 CREATE TABLE IF NOT EXISTS conversations (
     id SERIAL PRIMARY KEY,
     user_id VARCHAR(255) NOT NULL,
-    role VARCHAR(20) DEFAULT 'user',
     channel VARCHAR(50) NOT NULL,
     message TEXT NOT NULL,
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
