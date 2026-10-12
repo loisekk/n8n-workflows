@@ -1,0 +1,465 @@
+{
+  "name": "Personal Assistant - OpenCode",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "whatsapp-webhook",
+      "name": "WhatsApp Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "whatsapp-incoming"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telegram",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "telegram-webhook",
+      "name": "Telegram Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 480],
+      "webhookId": "telegram-incoming"
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {}
+      },
+      "id": "gmail-trigger",
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1,
+      "position": [240, 660],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "YOUR_GMAIL_CREDENTIAL_ID",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "cron-scheduler",
+      "name": "Scheduled Jobs",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 840]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// OpenClaw Gateway - Central Orchestration\nconst channel = $input.first().json.channel || 'unknown';\nconst userId = $input.first().json.userId || $input.first().json.from || 'default';\nconst message = $input.first().json.message || $input.first().json.text || $input.first().json.body || '';\nconst timestamp = new Date().toISOString();\n\n// Normalize message across channels\nconst normalizedInput = {\n  channel: channel,\n  userId: userId,\n  message: message,\n  timestamp: timestamp,\n  raw: $input.first().json\n};\n\nreturn [{ json: normalizedInput }];"
+      },
+      "id": "gateway-normalizer",
+      "name": "OpenCode Normalizer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 560]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "conversations",
+        "columns": "user_id, channel, message, timestamp",
+        "options": {}
+      },
+      "id": "memory-store",
+      "name": "Memory Store (Postgres)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [760, 460],
+      "credentials": {
+        "postgres": {
+          "id": "YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres Memory"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT message, channel, timestamp FROM conversations WHERE user_id = '{{ $json.userId }}' ORDER BY timestamp DESC LIMIT 20",
+        "options": {}
+      },
+      "id": "memory-fetch",
+      "name": "Memory Fetch (Postgres)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [760, 660],
+      "credentials": {
+        "postgres": {
+          "id": "YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres Memory"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:11434/api/chat",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "llama3"
+            },
+            {
+              "name": "stream",
+              "value": "false"
+            },
+            {
+              "name": "messages",
+              "value": "={{ JSON.stringify([{ role: 'system', content: 'You are a helpful personal assistant. You have memory of past conversations. Be concise and helpful.' }, ...($json.history || []).map(h => ({ role: h.channel === 'user' ? 'user' : 'assistant', content: h.message })), { role: 'user', content: $json.message }]) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ollama-llm",
+      "name": "Ollama LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1000, 560]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Parse Ollama response and extract tool calls if any\nconst response = $input.first().json;\nconst assistantMessage = response.message?.content || response.response || 'I could not process that request.';\n\n// Check for tool call patterns\nconst toolPatterns = {\n  'web_search': /search (?:for )?(.+)/i,\n  'calculate': /calculate (.+)/i,\n  'reminder': /remind me (?:to )?(.+)/i,\n  'weather': /weather (?:in )?(.+)/i\n};\n\nlet toolCall = null;\nfor (const [tool, pattern] of Object.entries(toolPatterns)) {\n  const match = assistantMessage.match(pattern);\n  if (match) {\n    toolCall = { tool, args: match[1] };\n    break;\n  }\n}\n\nreturn [{\n  json: {\n    response: assistantMessage,\n    toolCall: toolCall,\n    userId: $input.first().json.userId,\n    channel: $input.first().json.channel\n  }\n}];"
+      },
+      "id": "response-parser",
+      "name": "Response Parser",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, 560]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.toolCall }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "tool-router",
+      "name": "Tool Router",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1480, 560]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.search.brave.com/res/v1/web/search?q={{ encodeURIComponent($json.toolCall.args) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Subscription-Token",
+              "value": "YOUR_BRAVE_API_KEY"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "web-search-tool",
+      "name": "Web Search Tool",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1720, 460]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:11434/api/chat",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "llama3"
+            },
+            {
+              "name": "stream",
+              "value": "false"
+            },
+            {
+              "name": "messages",
+              "value": "={{ JSON.stringify([{ role: 'system', content: 'Summarize these search results concisely.' }, { role: 'user', content: 'Query: ' + $json.toolCall.args + '\\n\\nResults: ' + JSON.stringify($json.data?.web?.results?.slice(0, 3) || []) }]) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "search-summarizer",
+      "name": "Search Summarizer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1960, 460]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, message: $json.response }) }}",
+        "options": {}
+      },
+      "id": "whatsapp-respond",
+      "name": "WhatsApp Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2200, 380]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('OpenCode Normalizer').item.json.userId }}",
+        "text": "={{ $json.response }}",
+        "additionalFields": {}
+      },
+      "id": "telegram-respond",
+      "name": "Telegram Respond",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [2200, 560],
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_TELEGRAM_CREDENTIAL_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('OpenCode Normalizer').item.json.userId }}",
+        "subject": "Re: Your Request",
+        "message": "={{ $json.response }}",
+        "options": {}
+      },
+      "id": "gmail-respond",
+      "name": "Gmail Respond",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [2200, 740],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "YOUR_GMAIL_CREDENTIAL_ID",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Tool executor - handles scheduled/background tasks\nconst taskType = $input.first().json.taskType || 'default';\nconst payload = $input.first().json.payload || {};\n\nconst results = [];\n\n// Example scheduled tasks\nif (taskType === 'email_check') {\n  // Check for important emails\n  results.push({ task: 'email_check', status: 'completed', summary: 'Checked inbox' });\n} else if (taskType === 'daily_summary') {\n  // Generate daily summary\n  results.push({ task: 'daily_summary', status: 'completed', summary: 'Generated summary' });\n} else if (taskType === 'reminder') {\n  // Process reminder\n  results.push({ task: 'reminder', status: 'completed', reminder: payload.message });\n}\n\nreturn results.map(r => ({ json: r }));"
+      },
+      "id": "task-executor",
+      "name": "Task Executor",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 840]
+    },
+    {
+      "parameters": {},
+      "id": "no-operation",
+      "name": "No Op",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1720, 660]
+    }
+  ],
+  "connections": {
+    "WhatsApp Webhook": {
+      "main": [
+        [
+          {
+            "node": "OpenCode Normalizer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Webhook": {
+      "main": [
+        [
+          {
+            "node": "OpenCode Normalizer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "OpenCode Normalizer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scheduled Jobs": {
+      "main": [
+        [
+          {
+            "node": "Task Executor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenCode Normalizer": {
+      "main": [
+        [
+          {
+            "node": "Memory Store (Postgres)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Memory Fetch (Postgres)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Memory Fetch (Postgres)": {
+      "main": [
+        [
+          {
+            "node": "Ollama LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama LLM": {
+      "main": [
+        [
+          {
+            "node": "Response Parser",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Response Parser": {
+      "main": [
+        [
+          {
+            "node": "Tool Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool Router": {
+      "main": [
+        [
+          {
+            "node": "Web Search Tool",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "WhatsApp Respond",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Telegram Respond",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Gmail Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Web Search Tool": {
+      "main": [
+        [
+          {
+            "node": "Search Summarizer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Summarizer": {
+      "main": [
+        [
+          {
+            "node": "WhatsApp Respond",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Telegram Respond",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Gmail Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "personal-assistant"
+    },
+    {
+      "name": "openclaw"
+    },
+    {
+      "name": "ollama"
+    }
+  ]
+}
